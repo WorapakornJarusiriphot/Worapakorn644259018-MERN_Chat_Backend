@@ -2,7 +2,6 @@ const express = require("express");
 const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
-const bcryptjs = require("bcryptjs");
 const mongoose = require("mongoose");
 const cookieParser = require("cookie-parser");
 const User = require("./models/User");
@@ -11,16 +10,20 @@ const Message = require("./models/Message");
 const ws = require("ws");
 const fs = require("fs");
 
+//config .env
 dotenv.config();
+
+//Server middleware
 const app = express();
 const CLIENT_URL = process.env.CLIENT_URL;
-
 app.use(cors({ credentials: true, origin: CLIENT_URL }));
 app.use(express.json());
 app.use(cookieParser());
+
+//set static(public) folder
 app.use("/uploads", express.static(__dirname + "/uploads"));
 
-//Databse Connection
+//Database Connection
 const MONGODB_URI = process.env.MONGODB_URI;
 mongoose.connect(MONGODB_URI);
 app.get("/", (req, res) => {
@@ -53,11 +56,11 @@ app.post("/login", async (req, res) => {
     const isMatchedPassword = bcrypt.compareSync(password, userDoc.password);
     if (isMatchedPassword) {
       //logged in
-      jwt.sign({ username, id: userDoc._id }, secret, {}, (err, token) => {
+      jwt.sign({ username, userId: userDoc._id }, secret, {}, (err, token) => {
         if (err) throw err;
         //Save data in cookie
         res.cookie("token", token).json({
-          id: userDoc._id,
+          userId: userDoc._id,
           username,
         });
       });
@@ -86,12 +89,44 @@ app.get("/profile", (req, res) => {
   }
 });
 
+app.get("/people", async (req, res) => {
+  const users = await User.find({}, { _id: 1, username: 1 });
+  res.json(users);
+});
+
+const getUserDataFromRequest = (req) => {
+  return new Promise((resolve, reject) => {
+    //console.log(req.cookies);
+    const token = req.cookies?.token;
+    if (token) {
+      jwt.verify(token, secret, {}, (err, userData) => {
+        if (err) throw err;
+        resolve(userData);
+      });
+    } else {
+      reject("no token");
+    }
+  });
+};
+
+app.get("/messages/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const userData = await getUserDataFromRequest(req);
+  const ourUserId = userData.userId;
+  const messages = await Message.find({
+    sender: { $in: [userId, ourUserId] },
+    recipient: { $in: [userId, ourUserId] },
+  }).sort({ createdAt: 1 });
+  res.json(messages);
+});
+
 //Run Server
 const PORT = process.env.PORT;
 const server = app.listen(PORT, () => {
   console.log("Server is running on http://localhost:" + PORT);
 });
 
+//Web Socket Server
 const wss = new ws.WebSocketServer({ server });
 
 wss.on("connection", (connection, req) => {
@@ -119,11 +154,12 @@ wss.on("connection", (connection, req) => {
       console.log("dead");
     }, 1000);
   }, 5000);
+
   connection.on("pong", () => {
     clearTimeout(connection.deadTimer);
   });
 
-  //read username and id from cookie for this connection
+  //read username and id from the cookie for this connection
 
   const cookies = req.headers.cookie;
   if (cookies) {
@@ -149,13 +185,14 @@ wss.on("connection", (connection, req) => {
     const messageData = JSON.parse(message.toString());
     const { recipient, sender, text, file } = messageData;
     let filename = null;
+    console.log(file);
     if (file) {
       const parts = file.name.split(".");
       const ext = parts[parts.length - 1];
       filename = Date.now() + "." + ext;
       const path = __dirname + "/uploads/" + filename;
-      const bufferData = new Buffer(file.data.split(",")[1], "base64");
-      fs.writeFile(path, bufferData, () => {
+      // const bufferData = new Buffer(file.data.split(",")[1], "base64");
+      fs.writeFile(path, file.data.split(",")[1], "base64", () => {
         console.log("file saved: " + path);
       });
     }
